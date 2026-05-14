@@ -1,38 +1,73 @@
 #!/usr/bin/env python3
 """
 TTNiche FYP Bot — GitHub Actions
-Scrolls real TikTok For You Page, transcribes with Groq Whisper,
-sends to ttniche.com for AI classification.
+Fetches trending TikTok videos via tikwm API (no browser needed),
+transcribes with Groq Whisper, sends to ttniche.com for AI classification.
 """
 
-import asyncio
 import os
 import sys
-import tempfile
 import time
+import random
+import tempfile
 import requests
 from groq import Groq
-from TikTokApi import TikTokApi
 
-# Config from GitHub Secrets (environment variables)
+# ── Config from GitHub Secrets ────────────────────────────────────────────────
 TTNICHE_URL    = os.environ["TTNICHE_URL"]
 TTNICHE_SECRET = os.environ["TTNICHE_SECRET"]
 GROQ_API_KEY   = os.environ["GROQ_API_KEY"]
-MS_TOKEN       = os.environ["MS_TOKEN"]
+TIKWM_API_KEY  = os.environ["TIKWM_API_KEY"]
 
 MIN_PLAYS    = 80_000
 MAX_AGE_DAYS = 7
-MAX_VIDEOS   = 2  # process max 2 videos per run (keeps job under 5 min)
+MAX_VIDEOS   = 3   # process max 3 videos per run
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 cutoff      = time.time() - (MAX_AGE_DAYS * 86400)
 
+# Rotating hashtag pool — simulates FYP diversity
+HASHTAG_POOL = [
+    "fyp", "foryou", "foryoupage", "viral", "trending",
+    "finance", "money", "investment", "sidehustle",
+    "gym", "fitness", "workout", "motivation",
+    "cooking", "recipe", "food", "healthyfood",
+    "tech", "ai", "chatgpt", "coding",
+    "fashion", "ootd", "style", "outfit",
+    "beauty", "skincare", "makeup", "glow",
+    "travel", "adventure", "vanlife", "roadtrip",
+    "gaming", "minecraft", "roblox", "pcgaming",
+    "comedy", "funny", "memes", "prank",
+    "pets", "cats", "dogs", "animals",
+    "asmr", "satisfying", "oddlysatisfying",
+    "mindset", "discipline", "sigma", "selfimprovement",
+    "crypto", "stocks", "daytrading", "budgeting",
+    "diy", "crafts", "homedecor", "renovation",
+    "dance", "music", "cover", "acoustic",
+    "truecrime", "horror", "mystery", "storytime",
+]
 
 def log(msg):
     print(msg, flush=True)
 
+def fetch_trending(hashtag: str, count: int = 20) -> list:
+    """Fetch trending videos for a hashtag via tikwm."""
+    try:
+        url = "https://www.tikwm.com/api/feed/search"
+        r = requests.get(url, params={
+            "keywords": hashtag,
+            "count": count,
+            "region": "US",
+            "api_key": TIKWM_API_KEY,
+        }, timeout=20)
+        data = r.json()
+        return data.get("data", {}).get("videos", []) or []
+    except Exception as e:
+        log(f"  [tikwm] Error fetching #{hashtag}: {e}")
+        return []
 
 def transcribe(video_url: str) -> str | None:
+    """Download video and transcribe via Groq Whisper."""
     try:
         resp = requests.get(video_url, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -49,7 +84,6 @@ def transcribe(video_url: str) -> str | None:
             result = groq_client.audio.transcriptions.create(
                 file=("video.mp4", f),
                 model="whisper-large-v3",
-                language="en",
             )
         os.unlink(tmp)
         text = (result.text or "").strip()
@@ -58,12 +92,28 @@ def transcribe(video_url: str) -> str | None:
         log(f"  [T] Error: {e}")
         return None
 
-
-def send_to_ttniche(data: dict, transcript: str | None) -> dict:
+def send_to_ttniche(video: dict, transcript: str | None) -> dict:
+    """Send video data + transcript to ingest.php."""
     try:
         resp = requests.post(
             TTNICHE_URL,
-            json={**data, "transcript": transcript or ""},
+            json={
+                "video_id":        str(video.get("video_id", "")),
+                "description":     video.get("title", ""),
+                "plays":           int(video.get("play", 0)),
+                "likes":           int(video.get("digg_count", 0)),
+                "shares":          int(video.get("share_count", 0)),
+                "comments":        int(video.get("comment_count", 0)),
+                "author_unique":   video.get("author", {}).get("unique_id", ""),
+                "author_nickname": video.get("author", {}).get("nickname", ""),
+                "author_avatar":   video.get("author", {}).get("avatar", ""),
+                "cover_url":       video.get("cover", ""),
+                "video_url":       video.get("play", ""),
+                "music_title":     video.get("music_info", {}).get("title", ""),
+                "duration":        int(video.get("duration", 0)),
+                "created_time":    int(video.get("create_time", 0)),
+                "transcript":      transcript or "",
+            },
             headers={"X-Secret": TTNICHE_SECRET},
             timeout=60,
         )
@@ -71,83 +121,63 @@ def send_to_ttniche(data: dict, transcript: str | None) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-
-async def main():
+def main():
     log("=" * 50)
     log(f"TTNiche FYP Bot — {time.strftime('%Y-%m-%d %H:%M:%S')}")
     log("=" * 50)
 
+    # Pick 3 random hashtags this run
+    hashtags = random.sample(HASHTAG_POOL, 3)
+    log(f"Hashtags this run: {hashtags}")
+
+    seen_ids  = set()
     processed = 0
 
-    async with TikTokApi() as api:
-        await api.create_sessions(
-            ms_tokens=[MS_TOKEN],
-            num_sessions=1,
-            sleep_after=3,
-            headless=True,
-        )
+    for tag in hashtags:
+        if processed >= MAX_VIDEOS:
+            break
 
-        async for video in api.trending.videos(count=20):
+        log(f"\n── #{tag} ──────────────────────────")
+        videos = fetch_trending(tag, count=15)
+        log(f"  Fetched {len(videos)} videos")
+
+        for video in videos:
             if processed >= MAX_VIDEOS:
                 break
 
-            vid        = video.as_dict
-            vid_id     = str(vid.get("id", ""))
-            stats      = vid.get("stats", {})
-            plays      = int(stats.get("playCount", 0))
-            created    = int(vid.get("createTime", 0))
-            author     = vid.get("author", {})
-            music      = vid.get("music", {})
-            video_info = vid.get("video", {})
-            desc       = vid.get("desc", "")
+            vid_id  = str(video.get("video_id", ""))
+            plays   = int(video.get("play", 0))
+            created = int(video.get("create_time", 0))
 
-            # Filters
-            if not vid_id or plays < MIN_PLAYS:
+            if not vid_id or vid_id in seen_ids:
+                continue
+            if plays < MIN_PLAYS:
                 continue
             if created and created < cutoff:
                 continue
 
-            author_unique = author.get("uniqueId", "")
-            video_url     = video_info.get("playAddr", "")
-            cover_url     = video_info.get("originCover", "")
-            music_orig    = bool(music.get("original", True))
+            seen_ids.add(vid_id)
 
-            log(f"\nVIDEO @{author_unique} — {plays:,} plays")
+            author  = video.get("author", {})
+            desc    = video.get("title", "")
+            vid_url = video.get("play", "")
+
+            log(f"\n  VIDEO @{author.get('unique_id','')} — {plays:,} plays")
             log(f"  {desc[:100]}")
-            log(f"  https://tiktok.com/@{author_unique}/video/{vid_id}")
 
-            # Transcribe only if original audio
+            # Transcribe
             transcript = None
-            if music_orig and video_url:
+            if vid_url:
                 log("  [T] Transcribing...")
-                transcript = await asyncio.to_thread(transcribe, video_url)
-                log(f"  [T] {'✓ ' + str(len(transcript)) + ' chars' if transcript else '✗ No speech'}")
-            else:
-                log("  [T] Skipped (song track)")
+                transcript = transcribe(vid_url)
+                log(f"  [T] {'✓ ' + str(len(transcript)) + ' chars' if transcript else '✗ No speech detected'}")
 
-            result = send_to_ttniche({
-                "video_id":        vid_id,
-                "description":     desc,
-                "plays":           plays,
-                "likes":           int(stats.get("diggCount", 0)),
-                "shares":          int(stats.get("shareCount", 0)),
-                "comments":        int(stats.get("commentCount", 0)),
-                "author_unique":   author_unique,
-                "author_nickname": author.get("nickname", ""),
-                "author_avatar":   author.get("avatarThumb", ""),
-                "cover_url":       cover_url,
-                "video_url":       video_url,
-                "music_title":     music.get("title", ""),
-                "music_original":  music_orig,
-                "duration":        int(video_info.get("duration", 0)),
-                "created_time":    created,
-            }, transcript)
-
-            log(f"  [→] {result.get('status')} — {result.get('message')}")
+            result = send_to_ttniche(video, transcript)
+            log(f"  [→] {result.get('status')} — {result.get('message','')}")
             processed += 1
 
-    log(f"\nDone — {processed} videos processed.")
-
+    log(f"\n{'='*50}")
+    log(f"Done — {processed} videos processed.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -1,4 +1,2 @@
-TikTokApi==7.3.3
 groq
 requests
-playwright

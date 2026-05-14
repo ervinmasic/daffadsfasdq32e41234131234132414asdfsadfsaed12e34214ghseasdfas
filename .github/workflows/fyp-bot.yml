@@ -23,17 +23,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 2
-          max_attempts: 2
-          command: playwright install chromium --with-deps
-
       - name: Run FYP bot
         env:
           TTNICHE_URL:    ${{ secrets.TTNICHE_URL }}
           TTNICHE_SECRET: ${{ secrets.TTNICHE_SECRET }}
           GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
-          MS_TOKEN:       ${{ secrets.MS_TOKEN }}
+          TIKWM_API_KEY:  ${{ secrets.TIKWM_API_KEY }}
         run: python bot.py
