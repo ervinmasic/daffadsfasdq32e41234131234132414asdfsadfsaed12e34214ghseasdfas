@@ -21,7 +21,7 @@ TIKWM_API_KEY  = os.environ["TIKWM_API_KEY"]
 
 MIN_PLAYS    = 80_000
 MAX_AGE_DAYS = 7
-MAX_VIDEOS   = 6   # process max 6 videos per run
+MAX_VIDEOS   = 20   # process max 20 videos per run
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 cutoff      = time.time() - (MAX_AGE_DAYS * 86400)
@@ -127,7 +127,7 @@ def main():
     log("=" * 50)
 
     # Pick 3 random hashtags this run
-    hashtags = random.sample(HASHTAG_POOL, 3)
+    hashtags = random.sample(HASHTAG_POOL, 5)
     log(f"Hashtags this run: {hashtags}")
 
     seen_ids  = set()
@@ -138,7 +138,7 @@ def main():
             break
 
         log(f"\n── #{tag} ──────────────────────────")
-        videos = fetch_trending(tag, count=15)
+        videos = fetch_trending(tag, count=20)
         log(f"  Fetched {len(videos)} videos")
 
         for video in videos:
