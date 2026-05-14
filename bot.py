@@ -100,7 +100,7 @@ def send_to_ttniche(video: dict, transcript: str | None) -> dict:
             json={
                 "video_id":        str(video.get("video_id", "")),
                 "description":     video.get("title", ""),
-                "plays":           int(video.get("play", 0)),
+                "plays":           int(video.get("play_count", 0)),
                 "likes":           int(video.get("digg_count", 0)),
                 "shares":          int(video.get("share_count", 0)),
                 "comments":        int(video.get("comment_count", 0)),
@@ -146,7 +146,7 @@ def main():
                 break
 
             vid_id  = str(video.get("video_id", ""))
-            plays   = int(video.get("play", 0))
+            plays   = int(video.get("play_count", 0))
             created = int(video.get("create_time", 0))
 
             if not vid_id or vid_id in seen_ids:
