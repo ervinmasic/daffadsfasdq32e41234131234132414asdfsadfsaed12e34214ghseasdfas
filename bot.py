@@ -21,7 +21,7 @@ TIKWM_API_KEY  = os.environ["TIKWM_API_KEY"]
 
 MIN_PLAYS    = 80_000
 MAX_AGE_DAYS = 7
-MAX_VIDEOS   = 3   # process max 3 videos per run
+MAX_VIDEOS   = 6   # process max 6 videos per run
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 cutoff      = time.time() - (MAX_AGE_DAYS * 86400)
