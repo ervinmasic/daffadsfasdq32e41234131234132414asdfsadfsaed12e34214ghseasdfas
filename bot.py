@@ -21,6 +21,7 @@ from playwright_stealth import Stealth
 TTNICHE_URL    = os.environ["TTNICHE_URL"]
 TTNICHE_SECRET = os.environ["TTNICHE_SECRET"]
 GROQ_API_KEY   = os.environ["GROQ_API_KEY"]
+TIKWM_API_KEY  = os.environ.get("TIKWM_API_KEY", "")
 
 MIN_PLAYS    = 50_000
 MAX_AGE_DAYS = 14
@@ -118,6 +119,28 @@ async def handle_response(response):
 
     except Exception as e:
         pass  # silently skip parse errors
+
+
+# ── Get downloadable URL via tikwm (bypasses TikTok CDN auth) ────────────────
+def get_tikwm_url(video_id: str, author: str) -> str | None:
+    try:
+        tiktok_url = f"https://www.tiktok.com/@{author}/video/{video_id}"
+        params = {"url": tiktok_url}
+        if TIKWM_API_KEY:
+            params["api_key"] = TIKWM_API_KEY
+        r = requests.get(
+            "https://www.tikwm.com/api/",
+            params=params,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
+        d = r.json()
+        if d.get("code") == 0:
+            play = d.get("data", {}).get("play") or d.get("data", {}).get("wmplay")
+            return play or None
+    except Exception as e:
+        log(f"  [T] tikwm error: {e}")
+    return None
 
 
 # ── Transcribe via Groq Whisper ───────────────────────────────────────────────
@@ -245,9 +268,12 @@ def main():
         log(f"   cover={'yes' if video.get('cover_url') else 'EMPTY'}  video_url={'yes' if video.get('video_url') else 'EMPTY'}")
 
         transcript = None
-        if video.get("video_url"):
-            log("  [T] Transcribing...")
-            transcript = transcribe(video["video_url"])
+        dl_url = get_tikwm_url(video["video_id"], video["author_unique"])
+        if not dl_url:
+            dl_url = video.get("video_url") or ""
+        if dl_url:
+            log("  [T] Transcribing via tikwm...")
+            transcript = transcribe(dl_url)
             log(f"  [T] {'✓ ' + str(len(transcript)) + ' chars' if transcript else '✗ No speech'}")
 
         result = send_to_ttniche(video, transcript)
