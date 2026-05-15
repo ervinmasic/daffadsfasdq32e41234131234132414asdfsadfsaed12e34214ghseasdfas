@@ -43,4 +43,5 @@ jobs:
           TTNICHE_URL:    ${{ secrets.TTNICHE_URL }}
           TTNICHE_SECRET: ${{ secrets.TTNICHE_SECRET }}
           GROQ_API_KEY:   ${{ secrets.GROQ_API_KEY }}
+          TIKWM_API_KEY:  ${{ secrets.TIKWM_API_KEY }}
         run: python bot.py
