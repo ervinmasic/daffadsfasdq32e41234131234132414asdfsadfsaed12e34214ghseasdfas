@@ -15,7 +15,7 @@ import tempfile
 import requests
 from groq import Groq
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TTNICHE_URL    = os.environ["TTNICHE_URL"]
@@ -186,7 +186,7 @@ async def scrape_fyp():
         )
 
         page = await context.new_page()
-        await stealth_async(page)
+        await Stealth().apply_stealth_async(page)
 
         # Intercept all responses
         page.on("response", handle_response)
