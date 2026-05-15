@@ -128,8 +128,9 @@ def transcribe(video_url: str) -> str | None:
         resp = requests.get(video_url, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Referer": "https://www.tiktok.com/",
-        })
+        }, allow_redirects=True)
         if resp.status_code != 200 or len(resp.content) < 10_000:
+            log(f"  [T] Download failed: HTTP {resp.status_code}, {len(resp.content)} bytes")
             return None
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             f.write(resp.content)
