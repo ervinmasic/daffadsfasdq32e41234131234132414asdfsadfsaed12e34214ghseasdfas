@@ -151,7 +151,15 @@ def send_to_ttniche(video: dict, transcript: str | None) -> dict:
             headers={"X-Secret": TTNICHE_SECRET},
             timeout=60,
         )
-        return resp.json()
+        if resp.status_code != 200:
+            return {"status": "error", "message": f"HTTP {resp.status_code}: {resp.text[:300]}"}
+        text = resp.text.strip()
+        if not text:
+            return {"status": "error", "message": "Empty response from server"}
+        try:
+            return resp.json()
+        except Exception:
+            return {"status": "error", "message": f"Non-JSON response: {text[:300]}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -227,6 +235,7 @@ def main():
     for video in videos[:MAX_VIDEOS]:
         log(f"\n── @{video['author_unique']} — {video['plays']:,} plays")
         log(f"   {video['description'][:80]}")
+        log(f"   cover={'yes' if video.get('cover_url') else 'EMPTY'}  video_url={'yes' if video.get('video_url') else 'EMPTY'}")
 
         transcript = None
         if video.get("video_url"):
