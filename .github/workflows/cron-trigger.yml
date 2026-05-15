@@ -1,0 +1,11 @@
+name: Cron Trigger
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test
+        run: echo "Pokrenuto preko cron-job.org"
