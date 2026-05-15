@@ -1,73 +1,123 @@
 #!/usr/bin/env python3
 """
-TTNiche FYP Bot — GitHub Actions
-Fetches trending TikTok videos via tikwm API (no browser needed),
-transcribes with Groq Whisper, sends to ttniche.com for AI classification.
+TTNiche FYP Bot — Playwright edition
+Otvara tiktok.com, interceptuje interne API pozive i skuplja FYP videe.
+Radi bez TikTok account sessiona.
 """
 
 import os
 import sys
+import json
 import time
 import random
+import asyncio
 import tempfile
 import requests
 from groq import Groq
+from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
-# ── Config from GitHub Secrets ────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 TTNICHE_URL    = os.environ["TTNICHE_URL"]
 TTNICHE_SECRET = os.environ["TTNICHE_SECRET"]
 GROQ_API_KEY   = os.environ["GROQ_API_KEY"]
-TIKWM_API_KEY  = os.environ["TIKWM_API_KEY"]
 
-MIN_PLAYS    = 80_000
-MAX_AGE_DAYS = 7
-MAX_VIDEOS   = 20   # process max 20 videos per run
+MIN_PLAYS    = 50_000
+MAX_AGE_DAYS = 14
+MAX_VIDEOS   = 25
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 cutoff      = time.time() - (MAX_AGE_DAYS * 86400)
-
-# Rotating hashtag pool — simulates FYP diversity
-HASHTAG_POOL = [
-    "fyp", "foryou", "foryoupage", "viral", "trending",
-    "finance", "money", "investment", "sidehustle",
-    "gym", "fitness", "workout", "motivation",
-    "cooking", "recipe", "food", "healthyfood",
-    "tech", "ai", "chatgpt", "coding",
-    "fashion", "ootd", "style", "outfit",
-    "beauty", "skincare", "makeup", "glow",
-    "travel", "adventure", "vanlife", "roadtrip",
-    "gaming", "minecraft", "roblox", "pcgaming",
-    "comedy", "funny", "memes", "prank",
-    "pets", "cats", "dogs", "animals",
-    "asmr", "satisfying", "oddlysatisfying",
-    "mindset", "discipline", "sigma", "selfimprovement",
-    "crypto", "stocks", "daytrading", "budgeting",
-    "diy", "crafts", "homedecor", "renovation",
-    "dance", "music", "cover", "acoustic",
-    "truecrime", "horror", "mystery", "storytime",
-]
+seen_ids    = set()
+collected   = []
 
 def log(msg):
     print(msg, flush=True)
 
-def fetch_trending(hashtag: str, count: int = 20) -> list:
-    """Fetch trending videos for a hashtag via tikwm."""
+# ── Intercept TikTok internal API responses ───────────────────────────────────
+async def handle_response(response):
+    """Catch TikTok's internal item_list API responses."""
     try:
-        url = "https://www.tikwm.com/api/feed/search"
-        r = requests.get(url, params={
-            "keywords": hashtag,
-            "count": count,
-            "region": "US",
-            "api_key": TIKWM_API_KEY,
-        }, timeout=20)
-        data = r.json()
-        return data.get("data", {}).get("videos", []) or []
-    except Exception as e:
-        log(f"  [tikwm] Error fetching #{hashtag}: {e}")
-        return []
+        url = response.url
+        # TikTok FYP endpoint
+        if "item_list" not in url and "recommend" not in url and "feed" not in url:
+            return
+        if response.status != 200:
+            return
 
+        body = await response.body()
+        data = json.loads(body)
+
+        items = (
+            data.get("itemList") or
+            data.get("item_list") or
+            data.get("data", {}).get("items") or
+            data.get("data", {}).get("videos") or
+            []
+        )
+
+        for item in items:
+            vid_id = str(item.get("id", "") or item.get("video_id", ""))
+            if not vid_id or vid_id in seen_ids:
+                continue
+
+            stats  = item.get("stats", {}) or item.get("statistics", {})
+            plays  = int(stats.get("playCount", 0) or stats.get("play_count", 0) or 0)
+            likes  = int(stats.get("diggCount", 0) or stats.get("like_count", 0) or 0)
+            shares = int(stats.get("shareCount", 0) or stats.get("share_count", 0) or 0)
+            comments = int(stats.get("commentCount", 0) or stats.get("comment_count", 0) or 0)
+
+            if plays < MIN_PLAYS:
+                continue
+
+            create_time = int(item.get("createTime", 0) or item.get("create_time", 0) or 0)
+            if create_time and create_time < cutoff:
+                continue
+
+            author = item.get("author", {}) or {}
+            video  = item.get("video", {}) or {}
+            music  = item.get("music", {}) or {}
+            desc   = item.get("desc", "") or ""
+
+            cover = (
+                video.get("cover") or
+                video.get("dynamicCover") or
+                video.get("originCover") or
+                item.get("cover_url", "") or ""
+            )
+            vid_url = (
+                video.get("playAddr") or
+                video.get("downloadAddr") or
+                item.get("play", "") or ""
+            )
+
+            seen_ids.add(vid_id)
+            collected.append({
+                "video_id":        vid_id,
+                "description":     desc,
+                "plays":           plays,
+                "likes":           likes,
+                "shares":          shares,
+                "comments":        comments,
+                "author_unique":   author.get("uniqueId", "") or author.get("unique_id", ""),
+                "author_nickname": author.get("nickname", ""),
+                "author_avatar":   author.get("avatarThumb", "") or author.get("avatar", ""),
+                "cover_url":       cover,
+                "video_url":       vid_url,
+                "music_title":     music.get("title", ""),
+                "duration":        int(video.get("duration", 0) or 0),
+                "created_time":    create_time,
+            })
+            log(f"  [+] @{author.get('uniqueId','?')} — {plays:,} plays — {desc[:60]}")
+
+    except Exception as e:
+        pass  # silently skip parse errors
+
+
+# ── Transcribe via Groq Whisper ───────────────────────────────────────────────
 def transcribe(video_url: str) -> str | None:
-    """Download video and transcribe via Groq Whisper."""
+    if not video_url:
+        return None
     try:
         resp = requests.get(video_url, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -75,11 +125,9 @@ def transcribe(video_url: str) -> str | None:
         })
         if resp.status_code != 200 or len(resp.content) < 10_000:
             return None
-
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             f.write(resp.content)
             tmp = f.name
-
         with open(tmp, "rb") as f:
             result = groq_client.audio.transcriptions.create(
                 file=("video.mp4", f),
@@ -92,28 +140,14 @@ def transcribe(video_url: str) -> str | None:
         log(f"  [T] Error: {e}")
         return None
 
+
+# ── Send to TTNiche ───────────────────────────────────────────────────────────
 def send_to_ttniche(video: dict, transcript: str | None) -> dict:
-    """Send video data + transcript to ingest.php."""
     try:
+        payload = {**video, "transcript": transcript or ""}
         resp = requests.post(
             TTNICHE_URL,
-            json={
-                "video_id":        str(video.get("video_id", "")),
-                "description":     video.get("title", ""),
-                "plays":           int(video.get("play_count", 0)),
-                "likes":           int(video.get("digg_count", 0)),
-                "shares":          int(video.get("share_count", 0)),
-                "comments":        int(video.get("comment_count", 0)),
-                "author_unique":   video.get("author", {}).get("unique_id", ""),
-                "author_nickname": video.get("author", {}).get("nickname", ""),
-                "author_avatar":   video.get("author", {}).get("avatar", ""),
-                "cover_url":       video.get("cover", ""),
-                "video_url":       video.get("play", ""),
-                "music_title":     video.get("music_info", {}).get("title", ""),
-                "duration":        int(video.get("duration", 0)),
-                "created_time":    int(video.get("create_time", 0)),
-                "transcript":      transcript or "",
-            },
+            json=payload,
             headers={"X-Secret": TTNICHE_SECRET},
             timeout=60,
         )
@@ -121,63 +155,92 @@ def send_to_ttniche(video: dict, transcript: str | None) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def main():
-    log("=" * 50)
-    log(f"TTNiche FYP Bot — {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    log("=" * 50)
 
-    # Pick 3 random hashtags this run
-    hashtags = random.sample(HASHTAG_POOL, 5)
-    log(f"Hashtags this run: {hashtags}")
+# ── Main ──────────────────────────────────────────────────────────────────────
+async def scrape_fyp():
+    log("=" * 55)
+    log(f"TTNiche FYP Bot (Playwright) — {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    log("=" * 55)
 
-    seen_ids  = set()
-    processed = 0
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-web-security",
+                "--lang=en-US",
+            ]
+        )
 
-    for tag in hashtags:
-        if processed >= MAX_VIDEOS:
-            break
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+            timezone_id="America/New_York",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+        )
 
-        log(f"\n── #{tag} ──────────────────────────")
-        videos = fetch_trending(tag, count=20)
-        log(f"  Fetched {len(videos)} videos")
+        page = await context.new_page()
+        await stealth_async(page)
 
-        for video in videos:
-            if processed >= MAX_VIDEOS:
+        # Intercept all responses
+        page.on("response", handle_response)
+
+        log("Opening tiktok.com...")
+        try:
+            await page.goto("https://www.tiktok.com/foryou", timeout=30000, wait_until="domcontentloaded")
+        except Exception:
+            await page.goto("https://www.tiktok.com", timeout=30000, wait_until="domcontentloaded")
+
+        log("Waiting for FYP to load...")
+        await asyncio.sleep(4)
+
+        # Scroll to load more videos
+        log("Scrolling FYP...")
+        for i in range(20):
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(random.uniform(0.8, 1.6))
+            if i % 5 == 4:
+                log(f"  Scroll {i+1}/20 — collected {len(collected)} videos so far")
+            if len(collected) >= MAX_VIDEOS:
                 break
 
-            vid_id  = str(video.get("video_id", ""))
-            plays   = int(video.get("play_count", 0))
-            created = int(video.get("create_time", 0))
+        await browser.close()
 
-            if not vid_id or vid_id in seen_ids:
-                continue
-            if plays < MIN_PLAYS:
-                continue
-            if created and created < cutoff:
-                continue
+    log(f"\nCollected {len(collected)} videos from FYP")
+    return collected
 
-            seen_ids.add(vid_id)
 
-            author  = video.get("author", {})
-            desc    = video.get("title", "")
-            vid_url = video.get("play", "")
+def main():
+    videos = asyncio.run(scrape_fyp())
 
-            log(f"\n  VIDEO @{author.get('unique_id','')} — {plays:,} plays")
-            log(f"  {desc[:100]}")
+    if not videos:
+        log("No videos collected — TikTok may have blocked. Exiting.")
+        sys.exit(0)
 
-            # Transcribe
-            transcript = None
-            if vid_url:
-                log("  [T] Transcribing...")
-                transcript = transcribe(vid_url)
-                log(f"  [T] {'✓ ' + str(len(transcript)) + ' chars' if transcript else '✗ No speech detected'}")
+    processed = 0
+    for video in videos[:MAX_VIDEOS]:
+        log(f"\n── @{video['author_unique']} — {video['plays']:,} plays")
+        log(f"   {video['description'][:80]}")
 
-            result = send_to_ttniche(video, transcript)
-            log(f"  [→] {result.get('status')} — {result.get('message','')}")
-            processed += 1
+        transcript = None
+        if video.get("video_url"):
+            log("  [T] Transcribing...")
+            transcript = transcribe(video["video_url"])
+            log(f"  [T] {'✓ ' + str(len(transcript)) + ' chars' if transcript else '✗ No speech'}")
 
-    log(f"\n{'='*50}")
+        result = send_to_ttniche(video, transcript)
+        log(f"  [→] {result.get('status')} — {result.get('message','')}")
+        processed += 1
+
+    log(f"\n{'='*55}")
     log(f"Done — {processed} videos processed.")
+
 
 if __name__ == "__main__":
     main()
