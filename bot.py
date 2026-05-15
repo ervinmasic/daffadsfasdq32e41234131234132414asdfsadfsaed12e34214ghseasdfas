@@ -88,8 +88,14 @@ async def handle_response(response):
             vid_url = (
                 video.get("playAddr") or
                 video.get("downloadAddr") or
+                video.get("bitrateInfo", [{}])[0].get("PlayAddr", {}).get("UrlList", [""])[0] if video.get("bitrateInfo") else "" or
                 item.get("play", "") or ""
             )
+
+            # Debug: log video obj keys first time only
+            if len(collected) == 0:
+                log(f"  [DBG] video keys: {list(video.keys())[:12]}")
+                log(f"  [DBG] vid_url present: {'yes' if vid_url else 'NO'}")
 
             seen_ids.add(vid_id)
             collected.append({
